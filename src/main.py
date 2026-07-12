@@ -32,13 +32,14 @@ AUTH: IAM (`--no-allow-unauthenticated`), NOT a shared token.
 This is a deliberate departure from zip-lookup / add-to-db / sheet-service, and the
 reason is the CALLER, which is the only thing that should determine this:
 
-    caller is TextIt      -> TextIt cannot mint Google OIDC tokens, so you are
+    caller is TextIt      -> TextIt cannot mint Google OIDC tokens, so we are
                              FORCED into --allow-unauthenticated + an app-layer
                              shared secret. That is a constraint, not a preference.
     caller is Cloud Sched -> IAM/OIDC (contacts-sync, vamc-sync, nightly-pipeline,
                              backup-textit-flows all do this).
-    caller is a HUMAN     -> IAM. Logan and his teammate already hold Google
-        (this service)       identities in this project.
+    caller is a HUMAN     -> IAM. We already hold Google identities in this
+        (this service)       project, so there is no reason to invent a second
+                             credential.
 
 The TextIt constraint does not apply here, so there is no reason to accept a shared
 secret. And the stakes are higher than for the other services: this endpoint returns

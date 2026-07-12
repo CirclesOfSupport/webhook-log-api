@@ -6,15 +6,15 @@ Query the TextIt webhook HTTP log from BigQuery.
 
 ## Why
 
-An IT error email says a webhook failed. Finding the actual fire — the request body,
-the response, the status — currently means binary-searching page numbers on
-`textit.com/httplog/webhooks/` (25 rows/page, ~1,600 pages, newest-first) until you
-land near the right timestamp.
+An IT error email tells us a webhook failed. Finding the actual fire — the request
+body, the response, the status — used to mean binary-searching page numbers on
+`textit.com/httplog/webhooks/` (25 rows/page, ~1,600 pages, newest-first) until we
+landed near the right timestamp.
 
-And TextIt retains only **~3.85 days** of that log. If the email arrived Friday and
-you look on Tuesday, **the row is gone from TextIt**. It is not gone from BigQuery.
+TextIt also retains only **~3.85 days** of that log. If the email arrived Friday and
+we look on Tuesday, the row is gone from TextIt. It is not gone from BigQuery.
 
-So past ~4 days this is not a nicer window onto TextIt. It is the only window.
+So past ~4 days this is not a nicer window onto TextIt — it is the only window.
 
 Data source: BigQuery tables `RESPONSES.webhook_log` (list rows, indefinite
 retention) and `RESPONSES.webhook_log_detail` (request/response bodies, 30-day
@@ -38,7 +38,7 @@ question is the **caller**:
 |---|---|---|
 | TextIt (`zip-lookup`, `add-to-db`, `sheet-service`) | `--allow-unauthenticated` + shared secret | TextIt **cannot mint Google OIDC tokens**. This is a constraint, not a choice. |
 | Cloud Scheduler (`contacts-sync`, `vamc-sync`, `nightly-pipeline`, `backup-textit-flows`) | `--no-allow-unauthenticated` + IAM | Scheduler speaks OIDC. |
-| **A human (this service)** | `--no-allow-unauthenticated` + IAM | Logan and his teammate already hold Google identities in this project. |
+| **A human (this service)** | `--no-allow-unauthenticated` + IAM | We already hold Google identities in this project. |
 
 The TextIt constraint does not apply here, so there is no reason to accept a shared
 secret — and the stakes are higher than for the other services: **this endpoint
@@ -57,7 +57,8 @@ gcloud run services add-iam-policy-binding webhook-log-api \
   --role="roles/run.invoker"
 ```
 
-Repeat per person. Revoke with `remove-iam-policy-binding`.
+Repeat per person. Revoke with `remove-iam-policy-binding` — access is per-account,
+so removing someone does not require rotating a secret and redistributing it.
 
 ## `GET /failures`
 
