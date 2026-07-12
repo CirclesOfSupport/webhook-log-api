@@ -214,6 +214,51 @@ ordered by failures descending. Keyed on `flow_uuid`; `flow_name` is display onl
 
 Unauthenticated liveness check.
 
+## Extending this service
+
+Open to new endpoints and filters — add what is useful. A few decisions are baked in
+that are invisible from reading the code, so they are written down here rather than
+rediscovered:
+
+**Never key on a flow name.** Flow names are mutable, decorated (`LIVE: `, dates,
+initials) and non-unique — `LIVE: Get Organization Info (2026-06-24 LP)` is a display
+label, not an identity. `flow_uuid` is the identity. The existing endpoint returns 400
+on a name and returns `flow_name` for display only. Please keep that.
+
+**Auth is IAM, and the absence of a token check is deliberate.** There is no
+application-layer auth in `main.py` on purpose — Cloud Run IAM
+(`--no-allow-unauthenticated`) means an unauthorized caller never reaches the code. A
+shared-secret check underneath that would be a second, weaker credential guarding a
+door IAM already locks. The other services (`zip-lookup`, `add-to-db`, `sheet-service`)
+use shared secrets because **TextIt cannot mint Google OIDC tokens** — a constraint,
+not a preference. It does not apply to a service humans call.
+
+**These responses contain subscriber PII** — request bodies carry contact uuid, zip,
+state, gender, ethnicity, free-text replies. Credentials are masked at ingest
+(`[REDACTED]`), but nothing else is. Worth keeping in mind for anything that logs,
+caches, or forwards a response.
+
+**Parameterize everything.** All filters go through
+`bigquery.ScalarQueryParameter` — no f-string interpolation into SQL. The `LIKE`
+filters build their `%...%` in the *parameter value*, not the query text.
+
+**Bound the time window.** Both tables are `PARTITION BY DATE(fired_at)`. Every query
+should carry a `fired_at >=` predicate or it scans the whole table. `_parse_since()`
+defaults to 7 days for exactly this reason.
+
+**`webhook_log_detail` bodies expire after 30 days** (native partition expiry). The
+list row survives; the body does not. Say so explicitly (`detail_expired: true`) rather
+than returning a silent null, which reads as "no body was sent."
+
+**Careful with `/summary` — the ranking can mislead.** It sorts by raw failure count
+and deliberately does not try to be smarter. A high failure *rate* is not necessarily a
+broken flow: `LIVE: Check if Organization is Offboarded` shows ~91% failure because it
+is only entered *when the Get Org Info webhook already failed* — its population is
+pre-filtered to the failure path. The corpus contains flows whose purpose is to run on
+failure, and nothing in the data marks them. So sorting by rate would push every
+error-path flow to the top as noise. Neither count nor rate is trustworthy alone; the
+judgment belongs to a reader who knows the architecture.
+
 ## Deploy
 
 Cloud Run, `us-east1`, same pattern as `zip-lookup`. Cloud Build trigger on push to
