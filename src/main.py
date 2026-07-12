@@ -177,7 +177,22 @@ def failures():
             where.append("l.flow_uuid = @flow_uuid")
             params.append(bigquery.ScalarQueryParameter("flow_uuid", "STRING", flow_uuid))
 
-        # --- contact: lives in the request BODY, so this needs the detail join ---
+        # --- contact: appears in the request BODY *or* the URL query string ---
+        #
+        # Which one depends on the webhook, so we must search BOTH. Measured across
+        # 40,683 fires (2026-07-12):
+        #   - 26,539 carry a UUID in the request body
+        #   -    486 carry it only in the URL (e.g. the Alchemer gift-card calls,
+        #            which pass ?uuid=<contact> in the query string)
+        #   - 13,892 carry NO contact anywhere -- and that is CORRECT, not a bug:
+        #            these are config/reference lookups (Get Organization Info,
+        #            Determine State and VAMC from Zip, Get Point People Emails,
+        #            classifier calls). The call is not ABOUT a contact, so there is
+        #            no contact to reference.
+        #
+        # So this filter is meaningful for subscriber-data webhooks (~100% traceable)
+        # and structurally empty for config lookups (0%). A zero-result response does
+        # not mean "no failures" -- see the no_contact_in_payload hint below.
         contact = args.get("contact")
         if contact:
             if not UUID_RE.match(contact):
@@ -185,7 +200,7 @@ def failures():
                     "status": "fail",
                     "error": f"contact does not look like a UUID: '{contact}'",
                 }), 400
-            where.append("d.request_body LIKE @contact_like")
+            where.append("(d.request_body LIKE @contact_like OR l.webhook_url LIKE @contact_like)")
             params.append(bigquery.ScalarQueryParameter("contact_like", "STRING", f"%{contact}%"))
 
         if args.get("httplog_id"):
@@ -293,14 +308,30 @@ def failures():
                 }
             results.append(item)
 
-        return jsonify({
+        payload = {
             "status": "success",
             "count": len(results),
             "limit": limit,
             "window_start": since.isoformat(),
             "truncated": len(results) == limit,
             "results": results,
-        }), 200
+        }
+
+        # An empty ?contact= result is ambiguous, and silently returning [] invites
+        # the wrong conclusion ("nothing failed for this subscriber"). It may instead
+        # mean the failing webhook never carried a contact at all -- which is the case
+        # for every config/reference lookup (~34% of all fires). Say so.
+        if contact and not results:
+            payload["hint"] = (
+                "No fires found carrying this contact UUID. Note that ~34% of webhooks "
+                "never reference a contact at all -- config and reference lookups "
+                "(e.g. Get Organization Info, Determine State and VAMC from Zip, "
+                "classifier calls) are not about a subscriber and carry no contact in "
+                "the request. If the failing webhook was one of those, search by "
+                "flow_uuid or url instead."
+            )
+
+        return jsonify(payload), 200
 
     except Exception as ex:
         logging.exception("query failed")

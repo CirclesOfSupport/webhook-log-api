@@ -68,7 +68,7 @@ only, last 7 days, 50 rows.
 | param | meaning |
 |---|---|
 | `flow_uuid` | TextIt flow UUID. **Stable identity — not the flow name.** |
-| `contact` | Contact UUID. Searched inside the **request body**. |
+| `contact` | Contact UUID. Searched in the **request body AND the URL**. See the coverage note below. |
 | `url` | Substring of the target URL, e.g. `get-responses_v2` |
 | `status` | Exact HTTP status, e.g. `500` |
 | `status_class` | `non2xx` (default) · `4xx` · `5xx` · `timeout` · `all` |
@@ -91,13 +91,45 @@ GET /failures?flow_uuid=LIVE:+Get+Organization+Info
 
 `flow_name` **is** returned, for display. It is never a key.
 
+### `contact` coverage — read this before trusting an empty result
+
+Measured across all 40,683 fires (2026-07-12):
+
+| | fires | |
+|---|---|---|
+| contact UUID in the request body | 26,539 | 65% |
+| contact UUID only in the URL (e.g. Alchemer gift-card calls) | 486 | 1% |
+| **no contact anywhere** | **13,892** | **34%** |
+
+**That 34% is correct behavior, not a gap.** Those are config and reference lookups —
+`Get Organization Info`, `Determine State and VAMC from Zip`, `Get Point People
+Emails`, the classifier calls. The request is not *about* a subscriber, so there is no
+contact in it to search for.
+
+The split is essentially per-webhook, not per-flow. A flow with several Call Webhook
+nodes will have some traceable and some not:
+
+| flow | endpoint | traceable |
+|---|---|---|
+| Unrecognized Message | `add-to-db/upsert` | 100% |
+| | `unrecognized-message-classification/classify` | 0% |
+| Follow-Up After Referral | `sheet-service/write` | 100% |
+| | `prompt-ai/call_gemini` | 0% |
+
+So: **`?contact=` is the right tool for subscriber-data webhooks and useless for config
+lookups.** An empty result does NOT mean "nothing failed for this subscriber" — it may
+mean the failing call never carried a contact. The API returns a `hint` field saying
+exactly that rather than a bare `[]`. When you hit it, search by `flow_uuid` or `url`
+instead.
+
 ### Examples
 
 ```bash
 # Everything that failed in a flow this week
 curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$BASE/failures?flow_uuid=c639b895-...&days=7"
 
-# The failure for one subscriber (contact UUID comes straight from the IT email)
+# The failure for one subscriber (contact UUID comes straight from the IT email).
+# Works for subscriber-data webhooks; returns a hint (not a bare []) for config lookups.
 curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$BASE/failures?contact=e8c1aefd-4f89-4744-84a3-37aa67f26956"
 
 # Every timeout hitting get-responses_v2 in the last 3 days
@@ -149,6 +181,23 @@ rather than returning a silent null:
 { "httplog_id": 120..., "detail_expired": true,
   "detail_note": "Request/response bodies are retained 30 days. This fire is older; only list metadata remains." }
 ```
+
+## Fidelity — this is a faithful superset of the TextIt UI
+
+Verified 2026-07-12 by diffing `httplog_id 121122757` against
+`textit.com/httplog/read/121122757/` field by field. The httplog detail page shows:
+flow name + editor link, date, elapsed ms, the raw request block, and the raw response
+block. **All of it is captured.** Nothing on that page is dropped.
+
+Differences, all in our favour:
+- `fired_at` is **more precise** — the UI truncates to the minute; we keep microseconds.
+- We add `httplog_id` and `flow_uuid` as queryable keys.
+- **Credentials are masked.** The TextIt UI renders the password in plaintext; we
+  return `[REDACTED]`.
+
+Not in the httplog at all (so not a gap in this API): the retry/attempt number. The
+"Final attempt failed (attempt #2)" in the IT error emails comes from TextIt's retry
+logic, which the httplog page does not render.
 
 ## `GET /summary`
 
