@@ -27,17 +27,37 @@ Filters AND together. Defaults to failures only.
     GET /failures?url=get-responses_v2&status=500
     GET /failures?flow_uuid=<uuid>&status_class=timeout&days=30
 
-Auth: `token` header, same as sheet-service / zip-lookup.
+AUTH: IAM (`--no-allow-unauthenticated`), NOT a shared token.
+
+This is a deliberate departure from zip-lookup / add-to-db / sheet-service, and the
+reason is the CALLER, which is the only thing that should determine this:
+
+    caller is TextIt      -> TextIt cannot mint Google OIDC tokens, so you are
+                             FORCED into --allow-unauthenticated + an app-layer
+                             shared secret. That is a constraint, not a preference.
+    caller is Cloud Sched -> IAM/OIDC (contacts-sync, vamc-sync, nightly-pipeline,
+                             backup-textit-flows all do this).
+    caller is a HUMAN     -> IAM. Logan and his teammate already hold Google
+        (this service)       identities in this project.
+
+The TextIt constraint does not apply here, so there is no reason to accept a shared
+secret. And the stakes are higher than for the other services: this endpoint returns
+REQUEST BODIES, which contain subscriber PII (contact uuid, zip, state, gender,
+ethnicity, free-text replies). A bearer token on a public URL guarding that is
+strictly worse than IAM -- and unnecessary.
+
+With IAM there is no shared secret to leak or rotate, and access is revocable
+per-person:
+
+    curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+         "$BASE/failures?flow_uuid=<uuid>&days=7"
 """
 from flask import Flask, request, jsonify
 import logging
-import os
 import re
 from datetime import datetime, timedelta, timezone
 
 from google.cloud import bigquery
-
-__API_TOKEN = os.environ.get("WEBHOOK_TOKEN", "")
 
 PROJECT = "early-alert-responses"
 T_LOG = f"`{PROJECT}.RESPONSES.webhook_log`"
@@ -58,12 +78,11 @@ bq = bigquery.Client(project=PROJECT)
 
 UUID_RE = re.compile(r"^[0-9a-fA-F-]{36}$")
 
-
-def _check_token():
-    t = request.headers.get("token")
-    if __API_TOKEN and (not t or t != __API_TOKEN):
-        return jsonify({"status": "fail", "error": "Invalid token"}), 401
-    return None
+# NOTE: there is deliberately NO application-layer auth check in this file.
+# Authentication is enforced by Cloud Run IAM (--no-allow-unauthenticated): a caller
+# without roles/run.invoker never reaches this code. Adding a shared-secret check on
+# top would be security theatre -- a second, weaker credential guarding a door IAM
+# has already locked.
 
 
 def _parse_since(args):
@@ -115,10 +134,6 @@ def failures():
     include_success       'true' to include 2xx as well
     limit           default 50, max 500
     """
-    err = _check_token()
-    if err:
-        return err
-
     try:
         args = request.args
 
@@ -297,10 +312,6 @@ def summary():
 
     Deliberately keyed and returned by flow_uuid; flow_name is display only.
     """
-    err = _check_token()
-    if err:
-        return err
-
     try:
         since, perr = _parse_since(request.args)
         if perr:

@@ -18,7 +18,7 @@ steps:
       - --image=us-east1-docker.pkg.dev/$PROJECT_ID/webhook-repo/webhook-log-api:$COMMIT_SHA
       - --region=us-east1
       - --platform=managed
-      - --allow-unauthenticated
+      - --no-allow-unauthenticated
       - --port=8080
       - --min-instances=0
       - --concurrency=50

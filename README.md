@@ -19,14 +19,41 @@ So past ~4 days this is not a nicer window onto TextIt. It is the only window.
 Data source: `RESPONSES.webhook_log` + `RESPONSES.webhook_log_detail`, populated
 daily by the ingest in `kriton-dev/EarlyAlert` (see `ops_scripts.md` in Atlas).
 
-## Auth
+## Auth — IAM, not a shared token
 
-`token` header, same as `sheet-service` and `zip-lookup`. Set via the
-`WEBHOOK_TOKEN` env var on the Cloud Run service.
+```bash
+curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" \
+     "$BASE/failures?flow_uuid=<uuid>&days=7"
+```
 
+This service is deployed `--no-allow-unauthenticated`. That is a **deliberate
+departure** from `zip-lookup` / `add-to-db` / `sheet-service`, and the deciding
+question is the **caller**:
+
+| caller | auth | why |
+|---|---|---|
+| TextIt (`zip-lookup`, `add-to-db`, `sheet-service`) | `--allow-unauthenticated` + shared secret | TextIt **cannot mint Google OIDC tokens**. This is a constraint, not a choice. |
+| Cloud Scheduler (`contacts-sync`, `vamc-sync`, `nightly-pipeline`, `backup-textit-flows`) | `--no-allow-unauthenticated` + IAM | Scheduler speaks OIDC. |
+| **A human (this service)** | `--no-allow-unauthenticated` + IAM | Logan and his teammate already hold Google identities in this project. |
+
+The TextIt constraint does not apply here, so there is no reason to accept a shared
+secret — and the stakes are higher than for the other services: **this endpoint
+returns request bodies containing subscriber PII** (contact uuid, zip, state, gender,
+ethnicity, free-text replies). A bearer token on a public URL guarding that is
+strictly worse than IAM.
+
+With IAM: no shared secret to leak or rotate, and access is **revocable per-person**.
+
+### Granting access
+
+```bash
+gcloud run services add-iam-policy-binding webhook-log-api \
+  --region=us-east1 \
+  --member="user:logan@circlesofsupport.net" \
+  --role="roles/run.invoker"
 ```
-curl -H "token: $TOKEN" "$BASE/failures?flow_uuid=<uuid>&days=7"
-```
+
+Repeat per person. Revoke with `remove-iam-policy-binding`.
 
 ## `GET /failures`
 
@@ -63,16 +90,16 @@ GET /failures?flow_uuid=LIVE:+Get+Organization+Info
 
 ```bash
 # Everything that failed in a flow this week
-curl -H "token: $TOKEN" "$BASE/failures?flow_uuid=c639b895-...&days=7"
+curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$BASE/failures?flow_uuid=c639b895-...&days=7"
 
 # The failure for one subscriber (contact UUID comes straight from the IT email)
-curl -H "token: $TOKEN" "$BASE/failures?contact=e8c1aefd-4f89-4744-84a3-37aa67f26956"
+curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$BASE/failures?contact=e8c1aefd-4f89-4744-84a3-37aa67f26956"
 
 # Every timeout hitting get-responses_v2 in the last 3 days
-curl -H "token: $TOKEN" "$BASE/failures?url=get-responses_v2&status_class=timeout&days=3"
+curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$BASE/failures?url=get-responses_v2&status_class=timeout&days=3"
 
 # 500s only, on one flow, last 30 days
-curl -H "token: $TOKEN" "$BASE/failures?flow_uuid=<uuid>&status=500&days=30"
+curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$BASE/failures?flow_uuid=<uuid>&status=500&days=30"
 ```
 
 ### Response
@@ -123,7 +150,7 @@ rather than returning a silent null:
 Failure counts grouped by flow, for a window. "What is breaking?"
 
 ```bash
-curl -H "token: $TOKEN" "$BASE/summary?days=7"
+curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$BASE/summary?days=7"
 ```
 
 Returns `flow_uuid`, `flow_name`, `total`, `failures`, `timeouts`, `failure_pct`,
@@ -139,9 +166,11 @@ Cloud Run, `us-east1`, same pattern as `zip-lookup`. Cloud Build trigger on push
 `main` (`cloudbuild.yaml`). Image goes to `webhook-repo` in Artifact Registry.
 
 **Required at deploy time:**
-- Env var `WEBHOOK_TOKEN` — the shared token
-- The service account needs **BigQuery Data Viewer + Job User** on
+- **No env vars.** There is no shared secret.
+- Deployed `--no-allow-unauthenticated`; grant `roles/run.invoker` per user (above).
+- The runtime service account needs **BigQuery Data Viewer + Job User** on
   `early-alert-responses`. The default compute SA
-  (`853176470965-compute@developer.gserviceaccount.com`) already has this.
+  (`853176470965-compute@developer.gserviceaccount.com`) already has this from the
+  other pipelines.
 
 Read-only. This service never writes to BigQuery.
