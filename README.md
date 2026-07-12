@@ -16,8 +16,12 @@ you look on Tuesday, **the row is gone from TextIt**. It is not gone from BigQue
 
 So past ~4 days this is not a nicer window onto TextIt. It is the only window.
 
-Data source: `RESPONSES.webhook_log` + `RESPONSES.webhook_log_detail`, populated
-daily by the ingest in `kriton-dev/EarlyAlert` (see `ops_scripts.md` in Atlas).
+Data source: BigQuery tables `RESPONSES.webhook_log` (list rows, indefinite
+retention) and `RESPONSES.webhook_log_detail` (request/response bodies, 30-day
+partition expiry) in the `early-alert-responses` project. Both are populated by a
+daily scheduled ingest that scrapes the TextIt console (no API exists for this log).
+
+This service is read-only. It never writes to BigQuery.
 
 ## Auth — IAM, not a shared token
 
