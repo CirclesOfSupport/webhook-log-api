@@ -61,8 +61,9 @@ from datetime import datetime, timedelta, timezone
 from google.cloud import bigquery
 
 PROJECT = "early-alert-responses"
-T_LOG = f"`{PROJECT}.RESPONSES.webhook_log`"
-T_DETAIL = f"`{PROJECT}.RESPONSES.webhook_log_detail`"
+DATASET = "OPS"
+T_LOG = f"`{PROJECT}.{DATASET}.webhook_log`"
+T_DETAIL = f"`{PROJECT}.{DATASET}.webhook_log_detail`"
 
 # webhook_log_detail carries partition_expiration_days=30. Past that the list row
 # survives (status, time, url) but the BODY is gone. Callers are told explicitly
