@@ -17,7 +17,7 @@ we look on Tuesday, the row is gone from TextIt. It is not gone from BigQuery.
 So past ~4 days this is not a nicer window onto TextIt — it is the only window.
 
 Data source: BigQuery tables `OPS.webhook_log` (list rows, indefinite retention)
-and `OPS.webhook_log_detail` (request/response bodies, 30-day partition expiry) in
+and `OPS.webhook_log_detail` (request/response bodies, 90-day partition expiry) in
 the `early-alert-responses` project. (They lived in `RESPONSES` until 2026-09-18.)
 Both are populated **hourly** by
 [`webhook-log-ingest`](https://github.com/CirclesOfSupport/webhook-log-ingest), a
@@ -239,9 +239,10 @@ Notes:
 - **Bodies are otherwise raw and contain PII** — contact UUID, zip, state, gender,
   ethnicity, free-text subscriber replies. Treat responses accordingly.
 
-### Body retention: 30 days
+### Body retention: 90 days
 
-`webhook_log_detail` has `partition_expiration_days = 30`. Past that, the list row
+`webhook_log_detail` has `partition_expiration_days = 90` (raised from 30 on
+2026-09-21, so no bodies exist for fires before 2026-08-25). Past that, the list row
 survives (status, time, URL) but the bodies are gone. The API says so explicitly
 rather than returning a silent null:
 
@@ -320,7 +321,7 @@ filters build their `%...%` in the *parameter value*, not the query text.
 should carry a `fired_at >=` predicate or it scans the whole table. `_parse_since()`
 defaults to 7 days for exactly this reason.
 
-**`webhook_log_detail` bodies expire after 30 days** (native partition expiry). The
+**`webhook_log_detail` bodies expire after 90 days** (native partition expiry). The
 list row survives; the body does not. Say so explicitly (`detail_expired: true`) rather
 than returning a silent null, which reads as "no body was sent."
 
