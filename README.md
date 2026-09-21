@@ -2,7 +2,7 @@
 
 Query the TextIt webhook HTTP log from BigQuery.
 
-**Last updated: 2026-07-12**
+**Last updated: 2026-09-21**
 
 ## Why
 
@@ -16,12 +16,51 @@ we look on Tuesday, the row is gone from TextIt. It is not gone from BigQuery.
 
 So past ~4 days this is not a nicer window onto TextIt — it is the only window.
 
-Data source: BigQuery tables `RESPONSES.webhook_log` (list rows, indefinite
-retention) and `RESPONSES.webhook_log_detail` (request/response bodies, 30-day
-partition expiry) in the `early-alert-responses` project. Both are populated by a
-daily scheduled ingest that scrapes the TextIt console (no API exists for this log).
+Data source: BigQuery tables `OPS.webhook_log` (list rows, indefinite retention)
+and `OPS.webhook_log_detail` (request/response bodies, 30-day partition expiry) in
+the `early-alert-responses` project. (They lived in `RESPONSES` until 2026-09-18.)
+Both are populated **hourly** by
+[`webhook-log-ingest`](https://github.com/CirclesOfSupport/webhook-log-ingest), a
+separate Cloud Run service that Cloud Scheduler (`webhook-log-ingest-hourly`, on the
+hour) calls to scrape the TextIt console — no API exists for this log. So the newest
+rows here are at most about an hour behind TextIt.
 
 This service is read-only. It never writes to BigQuery.
+
+## Quick start
+
+Service URL:
+
+```
+https://webhook-log-api-853176470965.us-east1.run.app
+```
+
+Every request — `/health` included — needs a Google identity token for an account
+that holds `roles/run.invoker` on the service (see [Granting access](#granting-access)).
+Log in once with `gcloud auth login` using your `@circlesofsupport.net` account.
+
+**bash / macOS / Linux / Cloud Shell**
+
+```bash
+BASE="https://webhook-log-api-853176470965.us-east1.run.app"
+curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$BASE/summary?days=7"
+```
+
+**Windows PowerShell** — capture the token in a variable first; the bash `$(...)`
+form does not work here:
+
+```powershell
+$token = gcloud auth print-identity-token
+$base  = "https://webhook-log-api-853176470965.us-east1.run.app"
+Invoke-RestMethod -Uri "$base/summary?days=7" -Headers @{ Authorization = "Bearer $token" } | ConvertTo-Json -Depth 5
+```
+
+A `401` or `403` means the token is missing or expired, or your account has not been
+granted `roles/run.invoker`. Identity tokens expire after an hour — fetch a fresh one
+and retry before asking for access.
+
+All the examples below use `$BASE` (bash) or `$base` / `$token` (PowerShell) as set
+here.
 
 ## Auth — IAM, not a shared token
 
@@ -52,13 +91,19 @@ With IAM: no shared secret to leak or rotate, and access is **revocable per-pers
 
 ```bash
 gcloud run services add-iam-policy-binding webhook-log-api \
-  --region=us-east1 \
+  --region=us-east1 --project=early-alert-responses \
   --member="user:logan@circlesofsupport.net" \
   --role="roles/run.invoker"
 ```
 
 Repeat per person. Revoke with `remove-iam-policy-binding` — access is per-account,
 so removing someone does not require rotating a secret and redistributing it.
+
+To see who currently has access:
+
+```bash
+gcloud run services get-iam-policy webhook-log-api --region=us-east1 --project=early-alert-responses
+```
 
 ## `GET /failures`
 
@@ -139,6 +184,29 @@ curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$BASE/failu
 curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$BASE/failures?flow_uuid=<uuid>&status=500&days=30"
 ```
 
+The same four in Windows PowerShell:
+
+```powershell
+$token = gcloud auth print-identity-token
+$base  = "https://webhook-log-api-853176470965.us-east1.run.app"
+$h     = @{ Authorization = "Bearer $token" }
+
+# Everything that failed in a flow this week
+Invoke-RestMethod -Uri "$base/failures?flow_uuid=c639b895-...&days=7" -Headers $h | ConvertTo-Json -Depth 6
+
+# The failure for one subscriber
+Invoke-RestMethod -Uri "$base/failures?contact=e8c1aefd-4f89-4744-84a3-37aa67f26956" -Headers $h | ConvertTo-Json -Depth 6
+
+# Every timeout hitting get-responses_v2 in the last 3 days
+Invoke-RestMethod -Uri "$base/failures?url=get-responses_v2&status_class=timeout&days=3" -Headers $h | ConvertTo-Json -Depth 6
+
+# 500s only, on one flow, last 30 days
+Invoke-RestMethod -Uri "$base/failures?flow_uuid=<uuid>&status=500&days=30" -Headers $h | ConvertTo-Json -Depth 6
+```
+
+`-Depth 6` matters: `ConvertTo-Json` defaults to depth 2 and flattens the nested
+`request` / `response` objects into unreadable type names.
+
 ### Response
 
 ```json
@@ -212,7 +280,13 @@ ordered by failures descending. Keyed on `flow_uuid`; `flow_name` is display onl
 
 ## `GET /health`
 
-Unauthenticated liveness check.
+Liveness check. It is **not** open: the service is `--no-allow-unauthenticated`, so
+Cloud Run IAM gates every path before the request reaches the code. Call it with a
+token like any other endpoint.
+
+```bash
+curl -H "Authorization: Bearer $(gcloud auth print-identity-token)" "$BASE/health"
+```
 
 ## Extending this service
 
@@ -261,8 +335,21 @@ judgment belongs to a reader who knows the architecture.
 
 ## Deploy
 
-Cloud Run, `us-east1`, same pattern as `zip-lookup`. Cloud Build trigger on push to
-`main` (`cloudbuild.yaml`). Image goes to `webhook-repo` in Artifact Registry.
+Cloud Run, `us-east1`, project `early-alert-responses`. A push to `main` fires the
+Cloud Build trigger that was set up through the Cloud Run console's continuous-deploy
+option, which builds and rolls out a new revision automatically.
+
+The image lands in Artifact Registry at
+`us-east1-docker.pkg.dev/early-alert-responses/cloud-run-source-deploy/webhook-log-api/webhook-log-api:<commit sha>`.
+
+**`cloudbuild.yaml` in this repo is not what deploys the service.** The console trigger
+does not read it, so its `webhook-repo` image path and its flags do not describe the
+running service. Service settings (IAM-only access, scaling, and so on) live on the
+Cloud Run service itself and carry across revisions. To see what is actually deployed:
+
+```bash
+gcloud run services describe webhook-log-api --region=us-east1 --project=early-alert-responses
+```
 
 **Required at deploy time:**
 - **No env vars.** There is no shared secret.
