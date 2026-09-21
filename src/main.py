@@ -65,10 +65,16 @@ DATASET = "OPS"
 T_LOG = f"`{PROJECT}.{DATASET}.webhook_log`"
 T_DETAIL = f"`{PROJECT}.{DATASET}.webhook_log_detail`"
 
-# webhook_log_detail carries partition_expiration_days=30. Past that the list row
+# webhook_log_detail carries partition_expiration_days=90. Past that the list row
 # survives (status, time, url) but the BODY is gone. Callers are told explicitly
 # rather than being handed a silent NULL.
-DETAIL_RETENTION_DAYS = 30
+DETAIL_RETENTION_DAYS = 90
+
+# Retention was 30 days until 2026-09-21. Bodies for fires before this date had
+# already expired when it was raised to 90, so they are gone even though they are
+# inside the 90-day window. Once that date is more than 90 days old (late
+# November 2026) this floor no longer changes anything.
+DETAIL_FLOOR = datetime(2026, 8, 25, tzinfo=timezone.utc)
 
 MAX_LIMIT = 500
 DEFAULT_LIMIT = 50
@@ -269,7 +275,10 @@ def failures():
         job = bq.query(sql, job_config=bigquery.QueryJobConfig(query_parameters=params))
         rows = list(job.result())
 
-        detail_cutoff = datetime.now(timezone.utc) - timedelta(days=DETAIL_RETENTION_DAYS)
+        detail_cutoff = max(
+            datetime.now(timezone.utc) - timedelta(days=DETAIL_RETENTION_DAYS),
+            DETAIL_FLOOR,
+        )
 
         results = []
         for r in rows:
@@ -290,10 +299,16 @@ def failures():
             if expired:
                 # Be explicit. A silent null would read as "no body was sent".
                 item["detail_expired"] = True
-                item["detail_note"] = (
-                    f"Request/response bodies are retained {DETAIL_RETENTION_DAYS} days. "
-                    "This fire is older; only list metadata remains."
-                )
+                if r.fired_at >= datetime.now(timezone.utc) - timedelta(days=DETAIL_RETENTION_DAYS):
+                    item["detail_note"] = (
+                        "Bodies for fires before 2026-08-25 expired under the earlier "
+                        "30-day retention; only list metadata remains."
+                    )
+                else:
+                    item["detail_note"] = (
+                        f"Request/response bodies are retained {DETAIL_RETENTION_DAYS} days. "
+                        "This fire is older; only list metadata remains."
+                    )
             else:
                 item["request"] = {
                     "method": r.request_method,

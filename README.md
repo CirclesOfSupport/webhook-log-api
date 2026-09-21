@@ -248,7 +248,7 @@ rather than returning a silent null:
 
 ```json
 { "httplog_id": 120..., "detail_expired": true,
-  "detail_note": "Request/response bodies are retained 30 days. This fire is older; only list metadata remains." }
+  "detail_note": "Request/response bodies are retained 90 days. This fire is older; only list metadata remains." }
 ```
 
 ## Fidelity — this is a faithful superset of the TextIt UI
